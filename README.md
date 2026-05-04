@@ -1,20 +1,22 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Garden Sandwich Maker
 
-# Run and deploy your AI Studio app
+A web-based paper-cut sandwich builder: drag ingredients, stack, and play with physics in the scene.
 
-This contains everything you need to run your app locally.
+## Prerequisites
 
-View your app in AI Studio: https://ai.studio/apps/e0e7895a-ddeb-45af-bc33-7c7396e0d993
+- [Node.js](https://nodejs.org/) (current LTS recommended)
 
-## Run Locally
+## Run locally
 
-**Prerequisites:**  Node.js
+1. Install dependencies: `npm install`
+2. Start the dev server: `npm run dev`
+3. Open the URL shown in the terminal (default port **3000**).
 
+## Build
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+- Production build: `npm run build`
+- Preview the build: `npm run preview`
+
+## 3D assets
+
+GLB files live under `public/models/` (served as `/models/...`). A Node script in `scripts/generate-bread-glb.mjs` can regenerate the draft bread mesh.
