@@ -1,7 +1,7 @@
 /**
- * Classic "tombstone" bread slice (top view): flat bottom, straight sides with
- * a slight outward bow, semicircular top — tan crust ring + cream crumb fill.
- * Y-up after extrusion. Run: node scripts/generate-bread-glb.mjs
+ * Pan-loaf toast slice: one continuous silhouette (waist + crown dome),
+ * solid crust rim via inset crumb — no hollow frame.
+ * Run: node scripts/generate-bread-glb.mjs
  */
 import { Buffer } from 'node:buffer';
 
@@ -31,51 +31,42 @@ const outDir = path.join(__dirname, '..', 'public', 'models');
 const outFile = path.join(outDir, 'bread_white_papercut.glb');
 
 /**
- * Classic loaf slice outline in XY (later rotated so thickness is Y).
- * @param {number} scale - uniform scale from unit template (half-width ~1.1)
+ * Pan-loaf toast outline — one continuous curve (no bolted-on bump arcs).
+ * Rounded rectangle: straight vertical sides, soft bottom corners, wide rounded top.
+ * Matches the dashed placement guide on the board reference.
  */
-function createClassicBreadShape(scale = 1) {
+function createPanLoafSliceShape(scale = 1) {
   const s = scale;
-  const hw = 1.1 * s;
-  const H_rect = 0.52 * s;
-  const bulge = 0.045 * s;
+  const hw = 1.02 * s;
+  const hh = 0.96 * s;
+  const rBot = 0.1 * s;
+  const rTop = 0.38 * s;
+  const topDip = 0.055 * s; // subtle center valley on crown (muffin-top drip)
 
   const shape = new THREE.Shape();
-  // CCW: flat bottom → right side → arch → left side → close
-  shape.moveTo(-hw, -H_rect);
-  shape.lineTo(hw, -H_rect);
-  shape.quadraticCurveTo(hw + bulge, -H_rect * 0.48, hw, 0);
-  // Upper semicircle: flat top of rectangle at y=0, dome toward +Y
-  shape.absarc(0, 0, hw, 0, Math.PI, false);
-  shape.quadraticCurveTo(-hw - bulge, -H_rect * 0.48, -hw, -H_rect);
+
+  shape.moveTo(-hw + rBot, -hh);
+  shape.lineTo(hw - rBot, -hh);
+  shape.absarc(hw - rBot, -hh + rBot, rBot, -Math.PI / 2, 0, false);
+  shape.lineTo(hw, hh - rTop);
+  shape.absarc(hw - rTop, hh - rTop, rTop, 0, Math.PI / 2, false);
+  shape.quadraticCurveTo(0, hh - topDip, -hw + rTop, hh);
+  shape.absarc(-hw + rTop, hh - rTop, rTop, Math.PI / 2, Math.PI, false);
+  shape.lineTo(-hw, -hh + rBot);
+  shape.absarc(-hw + rBot, -hh + rBot, rBot, Math.PI, Math.PI * 1.5, false);
 
   return shape;
-}
-
-/** Hole path with opposite winding to outer (for ExtrudeGeometry). */
-function createCrumbHolePath(innerScale) {
-  const inner = createClassicBreadShape(innerScale);
-  const pts = inner.getPoints(96);
-  const path = new THREE.Path();
-  if (pts.length < 3) return path;
-  const last = pts[pts.length - 1];
-  path.moveTo(last.x, last.y);
-  for (let i = pts.length - 2; i >= 0; i--) {
-    path.lineTo(pts[i].x, pts[i].y);
-  }
-  path.lineTo(last.x, last.y);
-  return path;
 }
 
 function extrudeMesh(shape, depth, matOpts, extrudeOverrides = {}) {
   const geo = new THREE.ExtrudeGeometry(shape, {
     depth,
-    curveSegments: 32,
+    curveSegments: 24,
     bevelEnabled: true,
-    bevelThickness: 0.01,
-    bevelSize: 0.014,
+    bevelThickness: 0.005,
+    bevelSize: 0.007,
     bevelOffset: 0,
-    bevelSegments: 2,
+    bevelSegments: 1,
     ...extrudeOverrides,
   });
   geo.rotateX(-Math.PI / 2);
@@ -84,36 +75,30 @@ function extrudeMesh(shape, depth, matOpts, extrudeOverrides = {}) {
 }
 
 const crustMat = {
-  color: new THREE.Color(0xc1a57b),
+  color: new THREE.Color(0xb8956e),
   roughness: 1,
   metalness: 0,
-  envMapIntensity: 0.1,
+  envMapIntensity: 0.08,
 };
 
 const crumbMat = {
-  color: new THREE.Color(0xebe6e0),
+  color: new THREE.Color(0xeee8e1),
   roughness: 1,
   metalness: 0,
-  envMapIntensity: 0.1,
+  envMapIntensity: 0.08,
 };
 
-const INNER = 0.82;
+const CRUST_DEPTH = 0.234;
+const CRUMB_RECESS = 0.008; // tan cap on bottom
+const CRUMB_PROUD = 0.0035; // white top slightly above tan rim
+const CRUMB_DEPTH = CRUST_DEPTH - CRUMB_RECESS - CRUMB_PROUD;
+const CRUMB_INSET = 0.87;
 
-const crustShape = createClassicBreadShape(1);
-crustShape.holes.push(createCrumbHolePath(INNER));
+const crust = extrudeMesh(createPanLoafSliceShape(1), CRUST_DEPTH, crustMat);
+crust.name = 'bread_crust';
 
-const crustRing = extrudeMesh(crustShape, 0.1, crustMat, {
-  bevelThickness: 0.012,
-  bevelSize: 0.016,
-});
-crustRing.name = 'bread_crust_ring';
-
-// Slightly smaller than hole so inner crust wall reads; avoids coplanar caps with ring
-const crumbSolid = extrudeMesh(createClassicBreadShape(INNER * 0.996), 0.098, crumbMat, {
-  bevelThickness: 0.008,
-  bevelSize: 0.01,
-});
-crumbSolid.name = 'bread_crumb';
+const crumb = extrudeMesh(createPanLoafSliceShape(CRUMB_INSET), CRUMB_DEPTH, crumbMat);
+crumb.name = 'bread_crumb';
 
 function centerMeshesInPlace(meshes) {
   const box = new THREE.Box3();
@@ -128,12 +113,17 @@ function centerMeshesInPlace(meshes) {
   }
 }
 
-centerMeshesInPlace([crustRing, crumbSolid]);
+centerMeshesInPlace([crust, crumb]);
+
+// White top just above flush with brown crust rim
+const crustBox = new THREE.Box3().setFromObject(crust);
+const crumbBox = new THREE.Box3().setFromObject(crumb);
+crumb.position.y += crustBox.max.y - crumbBox.max.y + CRUMB_PROUD;
 
 const root = new THREE.Group();
 root.name = 'bread_white_papercut';
-root.add(crustRing);
-root.add(crumbSolid);
+root.add(crust);
+root.add(crumb);
 
 const box = new THREE.Box3().setFromObject(root);
 const size = new THREE.Vector3();

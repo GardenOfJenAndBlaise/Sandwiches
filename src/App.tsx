@@ -1,6 +1,6 @@
 import React, { Suspense, useState, useRef, useMemo } from 'react';
 import { Canvas, useLoader, useThree, useFrame } from '@react-three/fiber';
-import { TextureLoader, Mesh } from 'three';
+import { TextureLoader, Mesh, Box3 } from 'three';
 import { OrbitControls, Environment, PerspectiveCamera, ContactShadows, useCursor, useGLTF, Float } from '@react-three/drei';
 import { Physics, RigidBody } from '@react-three/rapier';
 import { motion, AnimatePresence } from 'motion/react';
@@ -31,7 +31,7 @@ const MODEL_CONFIG: Record<IngredientType, ModelSettings> = {
   bread: { 
     url: '/models/bread_white_papercut.glb', 
     collider: 'cuboid', 
-    args: [2.2, 0.4, 2.2] 
+    args: [2.2, 0.234, 2.2] 
   },
   lettuce: { 
     url: '/models/lettuce_papercut.glb', 
@@ -59,12 +59,96 @@ const MODEL_CONFIG: Record<IngredientType, ModelSettings> = {
   },
 };
 
+/** Y-extent (thickness) per ingredient — matches MODEL_CONFIG / placeholder meshes */
+const BASE_BREAD_CENTER_Y = 0.25;
+
+function getIngredientThickness(type: IngredientType): number {
+  const cfg = MODEL_CONFIG[type];
+  if (cfg.args?.[1] != null) return cfg.args[1];
+  if (type === 'lettuce') return 0.1;
+  return 0.15;
+}
+
+/** Fallback stack top before raycast runs */
+function computeStackTopY(layers: IngredientData[]): number {
+  let top = BASE_BREAD_CENTER_Y + getIngredientThickness('bread') / 2;
+  for (const layer of layers) {
+    top += getIngredientThickness(layer.type);
+  }
+  return top;
+}
+
+/** Pad above measured pile top (constant stick mounts here) */
+const STACK_TOP_OFFSET = 0.006;
+/** Reject airborne spawns above catalog stack height + tilt margin */
+const STACK_CEILING_PAD = 0.55;
+const SETTLE_FRAMES = 24;
+const MEASURE_SAMPLES = 6;
+
+/**
+ * Stack top = highest world-space point on any settled ingredient bounds.
+ * Rays miss staggered stacks (center gap) and can hit wrong mesh shells;
+ * per-piece bounding boxes match the visible pile.
+ */
+const StackTopMeasurer = ({
+  enabled,
+  layers,
+  onUpdate,
+}: {
+  enabled: boolean;
+  layers: IngredientData[];
+  onUpdate: (y: number) => void;
+}) => {
+  const { scene } = useThree();
+  const bounds = useMemo(() => new Box3(), []);
+  const framesRef = useRef(0);
+  const samplesRef = useRef<number[]>([]);
+  const lockedRef = useRef(false);
+
+  useFrame(() => {
+    if (!enabled) {
+      framesRef.current = 0;
+      samplesRef.current = [];
+      lockedRef.current = false;
+      return;
+    }
+    if (lockedRef.current) return;
+
+    framesRef.current += 1;
+    if (framesRef.current < SETTLE_FRAMES) return;
+
+    const floorY = BASE_BREAD_CENTER_Y - getIngredientThickness('bread') / 2;
+    const ceilingY = computeStackTopY(layers) + STACK_CEILING_PAD;
+
+    let maxY = -Infinity;
+    scene.traverse((obj) => {
+      if (obj.userData?.sandwichIngredientRoot !== true) return;
+      bounds.setFromObject(obj);
+      if (bounds.isEmpty()) return;
+      if (bounds.max.y < floorY || bounds.max.y > ceilingY) return;
+      if (bounds.max.y > maxY) maxY = bounds.max.y;
+    });
+
+    if (!Number.isFinite(maxY)) return;
+
+    samplesRef.current.push(maxY);
+    if (samplesRef.current.length < MEASURE_SAMPLES) return;
+
+    const sorted = [...samplesRef.current].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)]!;
+    onUpdate(median + STACK_TOP_OFFSET);
+    lockedRef.current = true;
+  });
+
+  return null;
+};
+
 interface IngredientPieceProps {
   id: string;
   type: IngredientType;
   initialPosition: [number, number, number];
   isFixed?: boolean;
-  stackHeight?: number;
+  stackTopY?: number;
 }
 
 const PlaceholderMesh = ({ type }: { type: IngredientType }) => {
@@ -187,7 +271,7 @@ const PlaceholderMesh = ({ type }: { type: IngredientType }) => {
 const IngredientPiece: React.FC<IngredientPieceProps & { 
   onSnap?: (id: string, pos: [number, number, number]) => void;
   onDragChange?: (dragging: boolean) => void;
-}> = ({ id, type, initialPosition, isFixed = false, stackHeight = 0, onSnap, onDragChange }) => {
+}> = ({ id, type, initialPosition, isFixed = false, stackTopY = 0.45, onSnap, onDragChange }) => {
   const rbRef = useRef<any>(null);
   const [hovered, setHovered] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -197,14 +281,10 @@ const IngredientPiece: React.FC<IngredientPieceProps & {
   
   useCursor(hovered);
 
-  // Calculate a safe lift height: base (bread) is around 0.4, each layer is ~0.15-0.2
-  // We want to float about 10% higher than current stack
-  const targetLiftHeight = useMemo(() => {
-    const baseHeight = 0.4;
-    const layerThickness = 0.2;
-    const currentStackTop = baseHeight + (stackHeight * layerThickness);
-    return Math.max(1.5, currentStackTop * 1.1);
-  }, [stackHeight]);
+  const targetLiftHeight = useMemo(
+    () => Math.max(1.2, stackTopY * 1.08 + 0.12),
+    [stackTopY]
+  );
 
   const bind = useDrag(({ offset: [x, y], down, last, event }) => {
     if (isFixed || !rbRef.current) return;
@@ -264,8 +344,9 @@ const IngredientPiece: React.FC<IngredientPieceProps & {
       angularDamping={0.9}
       linearDamping={0.9}
     >
-      <group 
-        onPointerOver={() => setHovered(true)} 
+      <group
+        userData={{ sandwichIngredient: true, sandwichIngredientRoot: true }}
+        onPointerOver={() => setHovered(true)}
         onPointerOut={() => setHovered(false)}
         {...(bind as any)()}
         scale={isDragging ? 1.05 : 1}
@@ -368,12 +449,24 @@ const Plate = ({ active }: { active: boolean }) => {
   );
 };
 
-const Toothpick = ({ active, stackHeight, onComplete }: { active: boolean, stackHeight: number, onComplete?: () => void }) => {
-  const totalHeight = 0.6 + (stackHeight * 0.25);
+/** Fixed stick above the measured top slice — same for thin and tall stacks */
+const TOOTHPICK_STICK_LENGTH = 0.38;
+const OLIVE_RADIUS = 0.25;
+const OLIVE_ON_STICK = 0.95;
+
+const Toothpick = ({
+  active,
+  stackTopY,
+  onComplete,
+}: {
+  active: boolean;
+  stackTopY: number;
+  onComplete?: () => void;
+}) => {
   const [yOffset, setYOffset] = useState(10);
   const completedRef = useRef(false);
-  
-  useFrame((state, delta) => {
+
+  useFrame((_state, delta) => {
     if (active && yOffset > 0) {
       const nextY = Math.max(0, yOffset - delta * 20);
       setYOffset(nextY);
@@ -386,24 +479,21 @@ const Toothpick = ({ active, stackHeight, onComplete }: { active: boolean, stack
       completedRef.current = false;
     }
   });
-  
+
   if (!active || yOffset >= 10) return null;
 
   return (
-    <group position={[0, yOffset, 0]}>
-      {/* Wood Stick */}
-      <mesh position={[0, totalHeight / 2, 0]} castShadow>
-        <cylinderGeometry args={[0.04, 0.04, totalHeight, 8]} />
+    <group position={[0, stackTopY + yOffset, 0]}>
+      <mesh position={[0, TOOTHPICK_STICK_LENGTH / 2, 0]} castShadow>
+        <cylinderGeometry args={[0.04, 0.04, TOOTHPICK_STICK_LENGTH, 8]} />
         <meshStandardMaterial color="#d2b48c" roughness={1} />
       </mesh>
-      
-      {/* Olive */}
-      <group position={[0, totalHeight - 0.1, 0]}>
+
+      <group position={[0, TOOTHPICK_STICK_LENGTH + OLIVE_RADIUS * OLIVE_ON_STICK, 0]}>
         <mesh castShadow>
-          <sphereGeometry args={[0.25, 16, 16]} />
+          <sphereGeometry args={[OLIVE_RADIUS, 16, 16]} />
           <meshStandardMaterial color="#808000" roughness={0.6} />
         </mesh>
-        {/* Pimento */}
         <mesh position={[0, 0.18, 0]} castShadow>
           <sphereGeometry args={[0.08, 8, 8]} />
           <meshStandardMaterial color="#f44336" />
@@ -419,6 +509,9 @@ export default function App() {
   const [isServing, setIsServing] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const [isDraggingAny, setIsDraggingAny] = useState(false);
+  const [measuredStackTopY, setMeasuredStackTopY] = useState<number | null>(null);
+
+  const stackTopY = measuredStackTopY ?? computeStackTopY(layers);
 
   const spawnIngredient = (type: IngredientType) => {
     if (isServing || isFinished) return;
@@ -442,6 +535,7 @@ export default function App() {
   };
 
   const serve = () => {
+    setMeasuredStackTopY(null);
     setIsServing(true);
     confetti({
       particleCount: 150,
@@ -461,6 +555,7 @@ export default function App() {
     setIsFinished(false);
     setIsServing(false);
     setIsLocked(false);
+    setMeasuredStackTopY(null);
   };
 
   return (
@@ -561,15 +656,20 @@ export default function App() {
                   initialPosition={layer.position as [number, number, number]}
                   onSnap={handleSnap}
                   onDragChange={setIsDraggingAny}
-                  stackHeight={layers.length}
+                  stackTopY={stackTopY}
                   isFixed={isLocked}
                 />
               ))}
 
+              <StackTopMeasurer
+                enabled={isServing && !isFinished}
+                layers={layers}
+                onUpdate={setMeasuredStackTopY}
+              />
               <Plate active={isServing || isFinished} />
-              <Toothpick 
-                active={isServing || isFinished} 
-                stackHeight={layers.length} 
+              <Toothpick
+                active={(isServing || isFinished) && measuredStackTopY != null}
+                stackTopY={stackTopY}
                 onComplete={handleToothpickComplete}
               />
               <Table />
