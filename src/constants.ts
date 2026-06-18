@@ -12,6 +12,12 @@ export const INGREDIENTS: Record<IngredientType, { name: string; label: string; 
     asset: '/src/assets/images/bread_slice_papercut.png',
     model: '/src/assets/models/bread.glb',
   },
+  rye_bread: {
+    name: 'Rye Bread',
+    label: 'Rye',
+    asset: '/src/assets/images/bread_slice_papercut.png',
+    model: '/src/assets/models/rye_bread_papercut.glb',
+  },
   lettuce: {
     name: 'Lettuce',
     label: 'Lettuce',
@@ -29,6 +35,12 @@ export const INGREDIENTS: Record<IngredientType, { name: string; label: string; 
     label: 'Cheese',
     asset: '/src/assets/images/cheese_slice_papercut.png',
     model: '/src/assets/models/cheese.glb',
+  },
+  grilled_cheese: {
+    name: 'Grilled Cheese',
+    label: 'Grilled Cheese',
+    asset: '/src/assets/images/cheese_slice_papercut.png',
+    model: '/src/assets/models/grilled_cheese_papercut.glb',
   },
   bacon: {
     name: 'Bacon',

@@ -1,6 +1,6 @@
 import React, { Suspense, useState, useRef, useMemo } from 'react';
 import { Canvas, useLoader, useThree, useFrame } from '@react-three/fiber';
-import { TextureLoader, Mesh, Box3 } from 'three';
+import { TextureLoader, Mesh, Box3, MeshStandardMaterial, Object3D } from 'three';
 import { OrbitControls, Environment, PerspectiveCamera, ContactShadows, useCursor, useGLTF, Float } from '@react-three/drei';
 import { Physics, RigidBody } from '@react-three/rapier';
 import { motion, AnimatePresence } from 'motion/react';
@@ -27,11 +27,54 @@ interface ModelSettings {
  * 2. Ensure names match the 'url' paths below.
  * 3. Adjust 'collider' type if the asset is complex (use 'hull' for organic shapes).
  */
+const BREAD_MODEL_URL = '/models/bread_white_papercut.glb';
+
+const RYE_BREAD_TINT = {
+  crust: '#4a2f1a',
+  crumb: '#6b4a2e',
+};
+
+const WHITE_BREAD_TINT = {
+  crust: '#b8956e',
+  crumb: '#eee8e1',
+};
+
+function cloneSceneWithMaterials(source: Object3D): Object3D {
+  const clone = source.clone(true);
+  clone.traverse((child) => {
+    if (!(child instanceof Mesh) || !child.material) return;
+    child.material = Array.isArray(child.material)
+      ? child.material.map((m) => m.clone())
+      : child.material.clone();
+  });
+  return clone;
+}
+
+function tintBread(root: Object3D, variant: 'bread' | 'rye_bread') {
+  const colors = variant === 'rye_bread' ? RYE_BREAD_TINT : WHITE_BREAD_TINT;
+  root.traverse((child) => {
+    if (!(child instanceof Mesh)) return;
+    const mat = child.material as MeshStandardMaterial;
+    if (!mat?.color) return;
+    const name = child.name.toLowerCase();
+    if (name.includes('crust')) mat.color.set(colors.crust);
+    else if (name.includes('crumb')) mat.color.set(colors.crumb);
+    else mat.color.set(variant === 'rye_bread' ? colors.crust : colors.crumb);
+    mat.roughness = 1;
+    mat.metalness = 0;
+  });
+}
+
 const MODEL_CONFIG: Record<IngredientType, ModelSettings> = {
   bread: { 
-    url: '/models/bread_white_papercut.glb', 
+    url: BREAD_MODEL_URL, 
     collider: 'cuboid', 
     args: [2.2, 0.234, 2.2] 
+  },
+  rye_bread: {
+    url: BREAD_MODEL_URL,
+    collider: 'cuboid',
+    args: [2.2, 0.234, 2.2],
   },
   lettuce: { 
     url: '/models/lettuce_papercut.glb', 
@@ -46,6 +89,11 @@ const MODEL_CONFIG: Record<IngredientType, ModelSettings> = {
     url: '/models/cheese_slice_papercut.glb', 
     collider: 'cuboid', 
     args: [2.0, 0.05, 2.0] 
+  },
+  grilled_cheese: {
+    url: '/models/grilled_cheese_papercut.glb',
+    collider: 'cuboid',
+    args: [2.0, 0.08, 2.0],
   },
   bacon: { 
     url: '/models/bacon_strip_papercut.glb', 
@@ -67,6 +115,12 @@ function getIngredientThickness(type: IngredientType): number {
   if (cfg.args?.[1] != null) return cfg.args[1];
   if (type === 'lettuce') return 0.1;
   return 0.15;
+}
+
+type BreadVariant = 'bread' | 'rye_bread';
+
+function isBreadType(type: IngredientType): type is BreadVariant {
+  return type === 'bread' || type === 'rye_bread';
 }
 
 /** Fallback stack top before raycast runs */
@@ -170,9 +224,11 @@ const PlaceholderMesh = ({ type }: { type: IngredientType }) => {
   const getColor = () => {
     switch (type) {
       case 'bread': return '#f3e5ab';
+      case 'rye_bread': return '#4a2f1a';
       case 'lettuce': return '#4caf50';
       case 'tomato': return '#f44336';
       case 'cheese': return '#ffeb3b';
+      case 'grilled_cheese': return '#e8a317';
       case 'bacon': return '#8d6e63';
       case 'mayo': return '#f5f5f5';
       default: return '#cccccc';
@@ -181,18 +237,35 @@ const PlaceholderMesh = ({ type }: { type: IngredientType }) => {
 
   const material = <meshStandardMaterial color={getColor()} roughness={0.8} />;
 
+  const breadScene = useMemo(() => {
+    if (!gltf?.scene || (type !== 'bread' && type !== 'rye_bread')) return null;
+    const clone = cloneSceneWithMaterials(gltf.scene);
+    tintBread(clone, type);
+    return clone;
+  }, [gltf, type]);
+
   // PRODUCTION ASSET RENDER
-  if (gltf && gltf.scene) {
-    return <primitive object={gltf.scene.clone()} scale={config.scale || [1, 1, 1]} />;
+  if (breadScene) {
+    return <primitive object={breadScene} scale={config.scale || [1, 1, 1]} />;
+  }
+
+  if (gltf?.scene) {
+    const clone = cloneSceneWithMaterials(gltf.scene);
+    return <primitive object={clone} scale={config.scale || [1, 1, 1]} />;
   }
 
   // PROCEDURAL FALLBACKS
   switch (type) {
     case 'bread':
+    case 'rye_bread':
       return (
         <mesh receiveShadow castShadow>
           <boxGeometry args={[2.2, 0.4, 2.2]} />
-          {material}
+          {type === 'rye_bread' ? (
+            <meshStandardMaterial color={getColor()} roughness={0.85} />
+          ) : (
+            material
+          )}
         </mesh>
       );
     case 'lettuce':
@@ -221,6 +294,23 @@ const PlaceholderMesh = ({ type }: { type: IngredientType }) => {
           <boxGeometry args={[2.0, 0.05, 2.0]} />
           {material}
         </mesh>
+      );
+    case 'grilled_cheese':
+      return (
+        <group>
+          <mesh receiveShadow castShadow>
+            <boxGeometry args={[2.0, 0.08, 2.0]} />
+            <meshStandardMaterial color={getColor()} roughness={0.55} emissive="#b45309" emissiveIntensity={0.12} />
+          </mesh>
+          <mesh position={[0, 0.042, 0]} rotation={[0, 0.4, 0]} receiveShadow castShadow>
+            <boxGeometry args={[1.5, 0.02, 0.35]} />
+            <meshStandardMaterial color="#c2410c" roughness={0.7} />
+          </mesh>
+          <mesh position={[0.35, 0.042, -0.25]} rotation={[0, -0.6, 0]} receiveShadow castShadow>
+            <boxGeometry args={[1.2, 0.02, 0.3]} />
+            <meshStandardMaterial color="#c2410c" roughness={0.7} />
+          </mesh>
+        </group>
       );
     case 'bacon':
       return (
@@ -324,11 +414,14 @@ const IngredientPiece: React.FC<IngredientPieceProps & {
 
   const physicsProps = useMemo(() => {
     switch (type) {
-      case 'cheese': return { restitution: 0, friction: 2.0, mass: 0.5 };
+      case 'cheese':
+      case 'grilled_cheese':
+        return { restitution: 0, friction: 2.0, mass: type === 'grilled_cheese' ? 0.65 : 0.5 };
       case 'lettuce': return { restitution: 0.1, friction: 1.5, mass: 0.6 };
       case 'tomato': return { restitution: 0.05, friction: 1.0, mass: 1.0 };
       case 'bacon': return { restitution: 0.1, friction: 0.8, mass: 0.8 };
       case 'mayo': return { restitution: 0, friction: 3.0, mass: 0.2 };
+      case 'rye_bread': return { restitution: 0.2, friction: 0.75, mass: 1.5 };
       default: return { restitution: 0.2, friction: 0.7, mass: 1.5 };
     }
   }, [type]);
@@ -365,6 +458,11 @@ const IngredientPiece: React.FC<IngredientPieceProps & {
 
 // --- UI Components ---
 
+const SIDEBAR_IMAGE_CLASS: Partial<Record<IngredientType, string>> = {
+  rye_bread: 'sepia brightness-90 contrast-110',
+  grilled_cheese: 'hue-rotate-12 brightness-105 saturate-150',
+};
+
 const SidebarItem = ({ 
   type, 
   title, 
@@ -381,17 +479,17 @@ const SidebarItem = ({
       whileHover={{ scale: 1.05, x: 10 }}
       whileTap={{ scale: 0.95 }}
       onClick={onClick}
-      className={`pointer-events-auto cursor-pointer flex items-center gap-4 p-4 bg-white/70 backdrop-blur-md border border-white/40 shadow-sm rounded-2xl group transition-all hover:bg-white/90 ${className}`}
+      className={`pointer-events-auto cursor-pointer flex items-center gap-3 p-3 bg-white/70 backdrop-blur-md border border-white/40 shadow-sm rounded-2xl group transition-all hover:bg-white/90 ${className}`}
     >
-      <div className="w-16 h-16 flex items-center justify-center p-2 rounded-xl bg-neutral-50/50">
+      <div className="w-14 h-14 flex items-center justify-center p-1.5 rounded-xl bg-neutral-50/50">
         <img 
           src={INGREDIENTS[type].asset} 
           alt={title} 
-          className="w-full h-full object-contain drop-shadow-md group-hover:rotate-6 transition-transform" 
+          className={`w-full h-full object-contain drop-shadow-md group-hover:rotate-6 transition-transform ${SIDEBAR_IMAGE_CLASS[type] ?? ''}`}
         />
       </div>
       <div className="flex flex-col">
-        <span className="font-marker text-neutral-800 text-lg">{title}</span>
+        <span className="font-marker text-neutral-800 text-base">{title}</span>
         <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-bold">Add to Stack</span>
       </div>
     </motion.div>
@@ -505,6 +603,7 @@ const Toothpick = ({
 
 export default function App() {
   const [layers, setLayers] = useState<IngredientData[]>([]);
+  const [breadVariant, setBreadVariant] = useState<BreadVariant>('bread');
   const [isFinished, setIsFinished] = useState(false);
   const [isServing, setIsServing] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
@@ -515,18 +614,29 @@ export default function App() {
 
   const spawnIngredient = (type: IngredientType) => {
     if (isServing || isFinished) return;
+
     const newLayer: IngredientData = {
       id: Math.random().toString(36).substr(2, 9),
       type,
       position: [
         (Math.random() - 0.5) * 0.5,
-        5.0 + (layers.length * 0.3), 
+        5.0 + (layers.length * 0.3),
         (Math.random() - 0.5) * 0.5
       ],
       rotation: Math.random() * Math.PI * 0.1,
       scale: 1,
       opacity: 1
     };
+
+    if (isBreadType(type)) {
+      setBreadVariant(type);
+      setLayers(prev => [
+        ...prev.map(layer => (isBreadType(layer.type) ? { ...layer, type } : layer)),
+        newLayer,
+      ]);
+      return;
+    }
+
     setLayers(prev => [...prev, newLayer]);
   };
 
@@ -552,6 +662,7 @@ export default function App() {
 
   const reset = () => {
     setLayers([]);
+    setBreadVariant('bread');
     setIsFinished(false);
     setIsServing(false);
     setIsLocked(false);
@@ -562,16 +673,18 @@ export default function App() {
     <div className="relative w-full h-screen bg-neutral-100 font-sans overflow-hidden">
       
       {/* Sidebar Layer: Fixed Stations */}
-      <div className="absolute inset-y-0 left-0 flex flex-col justify-center gap-4 p-8 pointer-events-none z-20">
+      <div className="absolute inset-y-0 left-0 flex flex-col justify-start gap-2.5 pt-44 pb-8 px-8 pointer-events-none z-20 overflow-y-auto">
         <SidebarItem type="lettuce" title="Lettuce" onClick={() => spawnIngredient('lettuce')} className="" />
         <SidebarItem type="tomato" title="Tomato" onClick={() => spawnIngredient('tomato')} className="" />
+        <SidebarItem type="bread" title="White Bread" onClick={() => spawnIngredient('bread')} className="" />
+        <SidebarItem type="rye_bread" title="Rye Bread" onClick={() => spawnIngredient('rye_bread')} className="" />
         <SidebarItem type="cheese" title="Cheese" onClick={() => spawnIngredient('cheese')} className="" />
+        <SidebarItem type="grilled_cheese" title="Grilled Cheese" onClick={() => spawnIngredient('grilled_cheese')} className="" />
       </div>
 
       <div className="absolute inset-y-0 right-0 flex flex-col justify-center gap-4 p-8 pointer-events-none z-20">
         <SidebarItem type="bacon" title="Bacon" onClick={() => spawnIngredient('bacon')} className="" />
         <SidebarItem type="mayo" title="Mayo" onClick={() => spawnIngredient('mayo')} className="" />
-        <SidebarItem type="bread" title="Top Bun" onClick={() => spawnIngredient('bread')} className="" />
       </div>
 
       {/* --- UI Layer: Controls --- */}
@@ -642,8 +755,9 @@ export default function App() {
           <Physics gravity={[0, -9.81, 0]}>
             <Suspense fallback={null}>
               <IngredientPiece 
+                key={`base-${breadVariant}`}
                 id="base-bread" 
-                type="bread" 
+                type={breadVariant} 
                 initialPosition={[0, 0.25, 0]} 
                 isFixed={true} 
               />
